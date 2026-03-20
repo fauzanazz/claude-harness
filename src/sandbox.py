@@ -23,7 +23,7 @@ class SandboxManager:
 
     def exec(self, container_id: str, command: str, timeout: int = 30) -> dict:
         container = self.client.containers.get(container_id)
-        wrapped_command = f"timeout {timeout} {command}"
+        wrapped_command = ["sh", "-c", f"timeout {timeout} sh -c {repr(command)}"]
         exit_code, output = container.exec_run(wrapped_command, demux=True)
         stdout_bytes, stderr_bytes = output if output else (None, None)
         return {

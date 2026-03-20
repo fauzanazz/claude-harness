@@ -1,3 +1,5 @@
+import base64
+
 from .sandbox import SandboxManager
 
 
@@ -10,7 +12,8 @@ def read_file(sandbox: SandboxManager, container_id: str, path: str) -> str:
 
 
 def write_file(sandbox: SandboxManager, container_id: str, path: str, content: str) -> str:
-    result = sandbox.exec(container_id, f"cat << 'HEREDOC_END' > {path}\n{content}\nHEREDOC_END")
+    encoded = base64.b64encode(content.encode()).decode()
+    result = sandbox.exec(container_id, f"echo {encoded} | base64 -d > {path}")
     if result["return_code"] != 0:
         error = result["stderr"].strip() or f"write exited with code {result['return_code']}"
         return f"Error writing {path}: {error}"
