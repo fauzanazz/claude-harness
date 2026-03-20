@@ -8,7 +8,6 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    anthropic_api_key: str = ""
     model: str = "claude-sonnet-4-6"
     sandbox_image: str = "claude-harness-sandbox"
     sandbox_memory: str = "2g"
