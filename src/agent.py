@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import AsyncGenerator
 
@@ -9,42 +10,92 @@ from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     TextBlock,
+    ToolUseBlock,
+    ToolResultBlock,
 )
 
+from .permissions import PermissionManager
 from .sandbox import SandboxManager
 from .tools import dispatch_tool
 
 logger = logging.getLogger(__name__)
 
+DISALLOWED_BUILTIN_TOOLS = [
+    "Bash", "Read", "Write", "Edit", "MultiEdit",
+    "Glob", "Grep", "LS", "WebFetch", "WebSearch",
+    "ToolSearch", "NotebookEdit", "NotebookRead",
+    "TodoRead", "TodoWrite",
+    "Agent", "AskUserQuestion",
+]
+
 
 class AgentLoop:
-    def __init__(self, sandbox: SandboxManager, container_id: str, model: str | None = None):
+    def __init__(
+        self,
+        sandbox: SandboxManager,
+        container_id: str,
+        model: str | None = None,
+        permissions: PermissionManager | None = None,
+    ):
         self.sandbox = sandbox
         self.container_id = container_id
         self.model = model
+        self.permissions = permissions or PermissionManager()
+        self._event_queue: asyncio.Queue[dict] = asyncio.Queue()
+
+    async def _check_permission(self, tool_name: str, args: dict) -> str | None:
+        decision = self.permissions.check(tool_name)
+        if decision == "allow":
+            return None
+        if decision == "deny":
+            return f"Permission denied: tool '{tool_name}' is not allowed in this session."
+        # needs_approval
+        pending = self.permissions.request_approval(tool_name, args)
+        await self._event_queue.put({
+            "type": "permission_request",
+            "request_id": pending.request_id,
+            "tool": tool_name,
+            "args": args,
+        })
+        result = await self.permissions.wait_for_decision(pending)
+        if result == "deny":
+            return f"User denied permission to execute {tool_name}."
+        return None
 
     def _make_mcp_server(self):
-        """Create an MCP server with sandbox tools."""
         sandbox = self.sandbox
         container_id = self.container_id
+        agent = self
 
         @tool("read_file", "Read the contents of a file at the given path in the sandbox", {"path": str})
         async def read_file(args):
+            error = await agent._check_permission("read_file", args)
+            if error:
+                return {"content": [{"type": "text", "text": error}]}
             result = dispatch_tool("read_file", args, sandbox, container_id)
             return {"content": [{"type": "text", "text": result}]}
 
         @tool("write_file", "Write content to a file at the given path in the sandbox", {"path": str, "content": str})
         async def write_file(args):
+            error = await agent._check_permission("write_file", args)
+            if error:
+                return {"content": [{"type": "text", "text": error}]}
             result = dispatch_tool("write_file", args, sandbox, container_id)
             return {"content": [{"type": "text", "text": result}]}
 
         @tool("bash_execute", "Execute a bash command in the sandbox and return stdout, stderr, and return code", {"command": str})
         async def bash_execute(args):
+            error = await agent._check_permission("bash_execute", args)
+            if error:
+                return {"content": [{"type": "text", "text": error}]}
             result = dispatch_tool("bash_execute", args, sandbox, container_id)
             return {"content": [{"type": "text", "text": result}]}
 
         @tool("grep_search", "Search for a pattern in files using ripgrep in the sandbox", {"pattern": str, "path": str})
         async def grep_search(args):
+            error = await agent._check_permission("grep_search", args)
+            if error:
+                return {"content": [{"type": "text", "text": error}]}
             result = dispatch_tool("grep_search", args, sandbox, container_id)
             return {"content": [{"type": "text", "text": result}]}
 
@@ -56,6 +107,7 @@ class AgentLoop:
         options = ClaudeAgentOptions(
             mcp_servers={"sandbox": server},
             permission_mode="bypassPermissions",
+            disallowed_tools=DISALLOWED_BUILTIN_TOOLS,
             system_prompt=(
                 "You are an AI assistant with access to a sandboxed Docker container. "
                 "Use the sandbox tools (read_file, write_file, bash_execute, grep_search) "
@@ -65,21 +117,41 @@ class AgentLoop:
         if self.model:
             options.model = self.model
 
-        # Extract the last user message as the prompt
         last_user_msg = messages[-1]["content"] if messages else ""
 
         async with ClaudeSDKClient(options=options) as client:
             await client.query(last_user_msg)
             async for message in client.receive_response():
+                # Drain any permission events that were pushed during tool execution
+                while not self._event_queue.empty():
+                    yield self._event_queue.get_nowait()
+
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, TextBlock):
                             yield {"type": "text_delta", "text": block.text}
+                        elif isinstance(block, ToolUseBlock):
+                            yield {
+                                "type": "tool_call",
+                                "id": block.id,
+                                "name": block.name,
+                                "args": block.input,
+                            }
+                        elif isinstance(block, ToolResultBlock):
+                            yield {
+                                "type": "tool_result",
+                                "tool_use_id": block.tool_use_id,
+                                "content": block.content,
+                                "is_error": block.is_error or False,
+                            }
                 elif isinstance(message, ResultMessage):
-                    if message.result:
-                        yield {"type": "text_delta", "text": message.result}
+                    usage = message.usage or {}
                     yield {
                         "type": "usage",
-                        "input_tokens": 0,
-                        "output_tokens": 0,
+                        "input_tokens": usage.get("input_tokens", 0),
+                        "output_tokens": usage.get("output_tokens", 0),
                     }
+
+            # Final drain
+            while not self._event_queue.empty():
+                yield self._event_queue.get_nowait()

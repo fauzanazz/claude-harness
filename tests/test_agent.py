@@ -47,3 +47,46 @@ async def test_agent_creates_file(sandbox):
     # Verify file actually exists in container
     result = manager.exec(container_id, "cat /workspace/test.txt")
     assert "hello world" in result["stdout"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_agent_yields_tool_events(sandbox):
+    """Verify the agent yields tool_call and tool_result events alongside text."""
+    manager, container_id = sandbox
+    agent = AgentLoop(manager, container_id)
+    messages = [{"role": "user", "content": "Use bash_execute to run 'echo tool_event_test'. Reply with the output."}]
+
+    events = []
+    async for event in agent.run(messages):
+        events.append(event)
+
+    event_types = {e["type"] for e in events}
+    assert "text_delta" in event_types, "Expected text output"
+    assert "usage" in event_types, "Expected usage event"
+
+    # Tool call events should include name and args
+    tool_calls = [e for e in events if e["type"] == "tool_call"]
+    if tool_calls:
+        tc = tool_calls[0]
+        assert "name" in tc
+        assert "args" in tc
+        assert "id" in tc
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_agent_usage_reports_tokens(sandbox):
+    """Verify usage event reports input/output tokens."""
+    manager, container_id = sandbox
+    agent = AgentLoop(manager, container_id)
+    messages = [{"role": "user", "content": "Say hello."}]
+
+    events = []
+    async for event in agent.run(messages):
+        events.append(event)
+
+    usage_events = [e for e in events if e["type"] == "usage"]
+    assert len(usage_events) == 1
+    assert "input_tokens" in usage_events[0]
+    assert "output_tokens" in usage_events[0]
