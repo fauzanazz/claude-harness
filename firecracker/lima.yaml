@@ -44,7 +44,7 @@ provision:
       # Convenience symlink (repo is already mounted via ~ at its real path)
       ln -sfn /Users/enjat/Github/claude-harness /harness
 
-      # Install build tools for rootfs
+      # Install build tools and Docker
       apt-get update -q
       apt-get install -yq --no-install-recommends \
         build-essential \
@@ -53,9 +53,17 @@ provision:
         docker.io \
         e2fsprogs
 
-      # Add lima user to docker and kvm groups
-      usermod -aG docker "$(limactl-user 2>/dev/null || echo lima)" || true
-      usermod -aG kvm "$(limactl-user 2>/dev/null || echo lima)" || true
+      # Enable and start Docker
+      systemctl enable docker
+      systemctl start docker
+
+      # Add the Lima user to docker and kvm groups
+      # Lima maps the host user; find them from /etc/passwd (non-system, non-nobody)
+      LIMA_USER=$(awk -F: '$3 >= 500 && $1 != "nobody" { print $1; exit }' /etc/passwd)
+      if [ -n "$LIMA_USER" ]; then
+        usermod -aG docker "$LIMA_USER"
+        usermod -aG kvm "$LIMA_USER"
+      fi
 
   # Install Rust toolchain as the user (not root)
   - mode: user
