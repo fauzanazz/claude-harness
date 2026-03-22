@@ -1,0 +1,3 @@
+rootfs/rootfs.ext4
+kernel/vmlinux
+snapshot/base/

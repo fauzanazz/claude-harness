@@ -20,5 +20,11 @@ class Settings(BaseSettings):
     max_context_tokens: int = 100_000
     compaction_model: str = "claude-haiku-4-5-20251001"
 
+    # Firecracker settings
+    firecracker_bin: str = "firecracker"
+    firecracker_kernel_path: str = "firecracker/kernel/vmlinux"
+    firecracker_rootfs_path: str = "firecracker/rootfs/rootfs.ext4"
+    firecracker_snapshot_path: str = "firecracker/snapshot/base"
+
 
 settings = Settings()

@@ -1,0 +1,78 @@
+# Lima VM configuration for running Firecracker on macOS (Apple Silicon).
+#
+# Usage:
+#   limactl create --name fc firecracker/lima.yaml
+#   limactl start fc
+#   limactl shell fc
+#
+# Inside the Lima VM, Firecracker can use /dev/kvm directly.
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+cpus: 4
+memory: "4GiB"
+disk: "20GiB"
+
+# Enable nested virtualization (KVM inside Lima's QEMU VM)
+nestedVirtualization: true
+
+mounts:
+  # Mount the project directory for easy access to rootfs, kernel, snapshots
+  - location: "~"
+    writable: true
+
+  # Explicit mount for the harness repo
+  - location: "."
+    mountPoint: "/harness"
+    writable: true
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+
+      # Install Firecracker
+      FC_VERSION="1.11.0"
+      FC_ARCH="aarch64"
+      curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/v${FC_VERSION}/firecracker-v${FC_VERSION}-${FC_ARCH}.tgz" \
+        | tar -xz -C /usr/local/bin --strip-components=1 \
+          "release-v${FC_VERSION}-${FC_ARCH}/firecracker-v${FC_VERSION}-${FC_ARCH}" \
+          "release-v${FC_VERSION}-${FC_ARCH}/jailer-v${FC_VERSION}-${FC_ARCH}"
+      ln -sf "/usr/local/bin/firecracker-v${FC_VERSION}-${FC_ARCH}" /usr/local/bin/firecracker
+      ln -sf "/usr/local/bin/jailer-v${FC_VERSION}-${FC_ARCH}" /usr/local/bin/jailer
+
+      # Ensure KVM is accessible
+      chmod 666 /dev/kvm || true
+
+      # Install build tools for rootfs
+      apt-get update -q
+      apt-get install -yq --no-install-recommends \
+        python3 python3-pip python3-venv \
+        docker.io \
+        e2fsprogs
+
+      # Add lima user to docker and kvm groups
+      usermod -aG docker "$(limactl-user 2>/dev/null || echo lima)" || true
+      usermod -aG kvm "$(limactl-user 2>/dev/null || echo lima)" || true
+
+portForwards:
+  # Forward Firecracker API socket access (if needed from host)
+  - guestSocket: "/tmp/firecracker.sock"
+    hostSocket: "/tmp/fc-lima.sock"
+
+message: |
+  Lima VM ready for Firecracker development.
+
+  Quick start:
+    limactl shell fc
+    firecracker --version
+    ls /dev/kvm
+
+  Build everything:
+    cd /harness/firecracker
+    make all
+
+  The project is mounted at /harness.
