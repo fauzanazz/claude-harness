@@ -24,20 +24,35 @@ VSOCK_PORT = 5000  # Must match guest-agent
 
 
 class VsockClient:
-    """Communicates with the guest agent over Firecracker's vsock UDS."""
+    """Communicates with the guest agent over Firecracker's vsock UDS.
+
+    Firecracker vsock protocol: connect to UDS, send "CONNECT {port}\\n",
+    receive "OK ...\\n", then bidirectional stream to guest.
+    """
 
     def __init__(self, vsock_uds_path: str):
         self._uds_path = vsock_uds_path
-        self._connect_path = f"{vsock_uds_path}_{VSOCK_PORT}"
         self._req_id = 0
 
     def _next_id(self) -> int:
         self._req_id += 1
         return self._req_id
 
+    async def _vsock_connect(self):
+        """Establish a vsock connection to the guest agent."""
+        reader, writer = await asyncio.open_unix_connection(self._uds_path)
+        writer.write(f"CONNECT {VSOCK_PORT}\n".encode())
+        await writer.drain()
+        response = await asyncio.wait_for(reader.readline(), timeout=5.0)
+        if not response.startswith(b"OK"):
+            writer.close()
+            await writer.wait_closed()
+            raise ConnectionError(f"vsock CONNECT failed: {response.decode().strip()}")
+        return reader, writer
+
     async def _request(self, method: str, params: dict | None = None) -> dict:
         """Send a request and return the response."""
-        reader, writer = await asyncio.open_unix_connection(self._connect_path)
+        reader, writer = await self._vsock_connect()
         try:
             req = {"id": self._next_id(), "method": method}
             if params:
@@ -64,7 +79,7 @@ class VsockClient:
         try:
             result = await self._request("ping")
             return result.get("status") == "ok"
-        except (ConnectionRefusedError, FileNotFoundError, asyncio.TimeoutError, OSError):
+        except (ConnectionRefusedError, FileNotFoundError, asyncio.TimeoutError, OSError, ConnectionError):
             return False
 
     async def exec(self, command: str, timeout: int = 30) -> dict:

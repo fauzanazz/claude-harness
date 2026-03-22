@@ -20,11 +20,25 @@ from src.firecracker import FirecrackerBackend, VsockClient, VMInstance
 
 
 async def mock_vsock_server(socket_path: str, responses: list[dict]):
-    """Start a Unix socket server that speaks the guest-agent protocol."""
+    """Start a Unix socket server that speaks the Firecracker vsock protocol.
+
+    Handles the CONNECT handshake, then length-prefixed JSON guest-agent protocol.
+    """
     response_iter = iter(responses)
 
     async def handle_client(reader, writer):
         try:
+            # Firecracker vsock handshake: expect "CONNECT {port}\n"
+            connect_line = await reader.readline()
+            if connect_line.startswith(b"CONNECT"):
+                writer.write(b"OK 0\n")
+                await writer.drain()
+            else:
+                writer.close()
+                await writer.wait_closed()
+                return
+
+            # Now speak the guest-agent length-prefixed JSON protocol
             while True:
                 len_bytes = await reader.readexactly(4)
                 msg_len = struct.unpack(">I", len_bytes)[0]
@@ -56,10 +70,8 @@ def vsock_dir():
 @pytest.mark.asyncio
 async def test_vsock_client_ping(vsock_dir):
     uds_base = os.path.join(vsock_dir, "vsock.sock")
-    connect_path = f"{uds_base}_5000"
-
     server = await mock_vsock_server(
-        connect_path, [{"result": {"status": "ok"}}]
+        uds_base, [{"result": {"status": "ok"}}]
     )
     async with server:
         client = VsockClient(uds_base)
@@ -72,10 +84,8 @@ async def test_vsock_client_ping(vsock_dir):
 @pytest.mark.asyncio
 async def test_vsock_client_exec(vsock_dir):
     uds_base = os.path.join(vsock_dir, "vsock.sock")
-    connect_path = f"{uds_base}_5000"
-
     server = await mock_vsock_server(
-        connect_path,
+        uds_base,
         [{"result": {"stdout": "hello\n", "stderr": "", "return_code": 0}}],
     )
     async with server:
@@ -92,11 +102,10 @@ async def test_vsock_client_read_file(vsock_dir):
     import base64
 
     uds_base = os.path.join(vsock_dir, "vsock.sock")
-    connect_path = f"{uds_base}_5000"
 
     content = base64.b64encode(b"file contents").decode()
     server = await mock_vsock_server(
-        connect_path,
+        uds_base,
         [{"result": {"content": content, "size": 13}}],
     )
     async with server:
@@ -110,10 +119,8 @@ async def test_vsock_client_read_file(vsock_dir):
 @pytest.mark.asyncio
 async def test_vsock_client_write_file(vsock_dir):
     uds_base = os.path.join(vsock_dir, "vsock.sock")
-    connect_path = f"{uds_base}_5000"
-
     server = await mock_vsock_server(
-        connect_path, [{"result": {"bytes_written": 5}}]
+        uds_base, [{"result": {"bytes_written": 5}}]
     )
     async with server:
         client = VsockClient(uds_base)
@@ -126,10 +133,8 @@ async def test_vsock_client_write_file(vsock_dir):
 @pytest.mark.asyncio
 async def test_vsock_client_list_files(vsock_dir):
     uds_base = os.path.join(vsock_dir, "vsock.sock")
-    connect_path = f"{uds_base}_5000"
-
     server = await mock_vsock_server(
-        connect_path,
+        uds_base,
         [
             {
                 "result": {
@@ -154,10 +159,8 @@ async def test_vsock_client_list_files(vsock_dir):
 @pytest.mark.asyncio
 async def test_vsock_client_error_response(vsock_dir):
     uds_base = os.path.join(vsock_dir, "vsock.sock")
-    connect_path = f"{uds_base}_5000"
-
     server = await mock_vsock_server(
-        connect_path, [{"error": "file not found"}]
+        uds_base, [{"error": "file not found"}]
     )
     async with server:
         client = VsockClient(uds_base)

@@ -64,7 +64,7 @@ async def fc_api(
     return resp
 
 
-async def configure_vm(client: httpx.AsyncClient, rootfs_cow: str):
+async def configure_vm(client: httpx.AsyncClient, rootfs_cow: str, vsock_uds_path: str):
     """Configure the microVM before boot."""
     # Machine config
     await fc_api(
@@ -108,21 +108,37 @@ async def configure_vm(client: httpx.AsyncClient, rootfs_cow: str):
         "/vsock",
         json={
             "guest_cid": VSOCK_CID,
-            "uds_path": "/tmp/fc-vsock.sock",
+            "uds_path": vsock_uds_path,
         },
     )
 
 
-async def ping_agent(vsock_uds_path: str) -> bool:
-    """Send a ping to the guest agent over vsock UDS path.
+async def vsock_connect(uds_path: str, port: int):
+    """Connect to a guest port via Firecracker's vsock UDS.
 
-    Firecracker exposes vsock connections via a Unix domain socket.
-    To connect to guest port 5000, connect to {uds_path}_{port}.
+    Firecracker vsock protocol:
+    1. Connect to the UDS
+    2. Send "CONNECT {port}\\n"
+    3. Receive "OK {port}\\n"
+    4. Bidirectional stream to guest
     """
-    connect_path = f"{vsock_uds_path}_{VSOCK_PORT}"
+    reader, writer = await asyncio.open_unix_connection(uds_path)
+    writer.write(f"CONNECT {port}\n".encode())
+    await writer.drain()
 
+    response = await asyncio.wait_for(reader.readline(), timeout=5.0)
+    if not response.startswith(b"OK"):
+        writer.close()
+        await writer.wait_closed()
+        raise ConnectionError(f"vsock CONNECT failed: {response.decode().strip()}")
+
+    return reader, writer
+
+
+async def ping_agent(vsock_uds_path: str) -> bool:
+    """Send a ping to the guest agent over vsock."""
     try:
-        reader, writer = await asyncio.open_unix_connection(connect_path)
+        reader, writer = await vsock_connect(vsock_uds_path, VSOCK_PORT)
 
         # Send ping request using length-prefixed JSON protocol
         req = json.dumps({"id": 1, "method": "ping"}).encode()
@@ -140,7 +156,7 @@ async def ping_agent(vsock_uds_path: str) -> bool:
         await writer.wait_closed()
 
         return resp.get("result", {}).get("status") == "ok"
-    except (ConnectionRefusedError, FileNotFoundError, asyncio.TimeoutError, OSError):
+    except (ConnectionRefusedError, FileNotFoundError, asyncio.TimeoutError, OSError, ConnectionError):
         return False
 
 
@@ -204,14 +220,17 @@ async def bake():
     rootfs_cow = os.path.join(socket_dir, "rootfs-cow.ext4")
     shutil.copy2(ROOTFS_PATH, rootfs_cow)
 
-    vsock_uds_path = "/tmp/fc-vsock.sock"
+    # Unique vsock UDS path per run (avoids "address in use" from stale sockets)
+    vsock_uds_path = os.path.join(socket_dir, "vsock.sock")
 
     # Start Firecracker process
     print(f"Starting Firecracker (socket: {socket_path})")
+    fc_log = os.path.join(socket_dir, "firecracker.log")
+    fc_log_file = open(fc_log, "w")
     fc_proc = subprocess.Popen(
         [FIRECRACKER_BIN, "--api-sock", socket_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=fc_log_file,
+        stderr=fc_log_file,
     )
 
     try:
@@ -226,7 +245,7 @@ async def bake():
         transport = httpx.AsyncHTTPTransport(uds=socket_path)
         async with httpx.AsyncClient(transport=transport, timeout=30) as client:
             # Configure and boot
-            await configure_vm(client, rootfs_cow)
+            await configure_vm(client, rootfs_cow, vsock_uds_path)
 
             print("Booting microVM...")
             await fc_api(client, "PUT", "/actions", json={"action_type": "InstanceStart"})
@@ -239,7 +258,23 @@ async def bake():
 
             print("Bake complete!")
 
+    except Exception as e:
+        # Dump Firecracker log for debugging
+        fc_log_file.flush()
+        print(f"\n=== Firecracker log ({fc_log}) ===")
+        try:
+            with open(fc_log) as f:
+                print(f.read()[-2000:] if os.path.getsize(fc_log) > 2000 else f.read())
+        except Exception:
+            pass
+
+        # Check vsock socket
+        vsock_connect = f"{vsock_uds_path}_{VSOCK_PORT}"
+        print(f"\nVsock UDS exists: {os.path.exists(vsock_uds_path)}")
+        print(f"Vsock connect path exists: {os.path.exists(vsock_connect)}")
+        raise
     finally:
+        fc_log_file.close()
         fc_proc.terminate()
         fc_proc.wait(timeout=5)
         # Clean up temp files

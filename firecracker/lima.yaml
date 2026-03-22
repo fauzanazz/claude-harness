@@ -58,12 +58,14 @@ provision:
       systemctl start docker
 
       # Add the Lima user to docker and kvm groups
-      # Lima maps the host user; find them from /etc/passwd (non-system, non-nobody)
-      LIMA_USER=$(awk -F: '$3 >= 500 && $1 != "nobody" { print $1; exit }' /etc/passwd)
+      # Lima maps macOS user with UID 501+ and home under /home/
+      LIMA_USER=$(awk -F: '$3 >= 500 && $6 ~ /^\/home/ { print $1; exit }' /etc/passwd)
       if [ -n "$LIMA_USER" ]; then
         usermod -aG docker "$LIMA_USER"
         usermod -aG kvm "$LIMA_USER"
       fi
+      # Ensure Docker socket is accessible regardless of group membership timing
+      chmod 666 /var/run/docker.sock || true
 
   # Install Rust toolchain as the user (not root)
   - mode: user
