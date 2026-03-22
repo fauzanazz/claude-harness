@@ -1,13 +1,13 @@
 import asyncio
 import logging
 
-from .sandbox import SandboxManager
+from .backend import SandboxBackend
 
 logger = logging.getLogger(__name__)
 
 
 class ContainerPool:
-    def __init__(self, sandbox: SandboxManager, min_size: int = 1, max_size: int = 5):
+    def __init__(self, sandbox: SandboxBackend, min_size: int = 1, max_size: int = 5):
         self.sandbox = sandbox
         self.min_size = min_size
         self.max_size = max_size
@@ -58,26 +58,29 @@ class ContainerPool:
 
     async def release(self, container_id: str):
         self._active.pop(container_id, None)
-        try:
-            self.sandbox.exec(container_id, "rm -rf /workspace/* /workspace/.[!.]* 2>/dev/null; mkdir -p /workspace/uploads")
-            await self._available.put(container_id)
-            logger.info("Pool: released container %s back to pool", container_id[:12])
-        except Exception:
-            logger.exception("Pool: failed to reset container %s, destroying", container_id[:12])
+        if self.sandbox.recyclable:
+            try:
+                self.sandbox.exec(container_id, "rm -rf /workspace/* /workspace/.[!.]* 2>/dev/null; mkdir -p /workspace/uploads")
+                await self._available.put(container_id)
+                logger.info("Pool: released container %s back to pool", container_id[:12])
+            except Exception:
+                logger.exception("Pool: failed to reset container %s, destroying", container_id[:12])
+                try:
+                    self.sandbox.destroy(container_id)
+                except Exception:
+                    pass
+        else:
             try:
                 self.sandbox.destroy(container_id)
+                logger.info("Pool: destroyed VM %s (non-recyclable)", container_id[:12])
             except Exception:
-                pass
+                logger.exception("Pool: failed to destroy VM %s", container_id[:12])
 
     def is_container_active(self, container_id: str) -> str | None:
         return self._active.get(container_id)
 
     def is_container_running(self, container_id: str) -> bool:
-        try:
-            container = self.sandbox.client.containers.get(container_id)
-            return container.status == "running"
-        except Exception:
-            return False
+        return self.sandbox.is_running(container_id)
 
     async def shutdown(self):
         if self._replenish_task:

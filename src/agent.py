@@ -15,7 +15,7 @@ from claude_agent_sdk import (
 )
 
 from .permissions import PermissionManager
-from .sandbox import SandboxManager
+from .backend import SandboxBackend
 from .tools import dispatch_tool
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ DISALLOWED_BUILTIN_TOOLS = [
 class AgentLoop:
     def __init__(
         self,
-        sandbox: SandboxManager,
+        sandbox: SandboxBackend,
         container_id: str,
         model: str | None = None,
         permissions: PermissionManager | None = None,

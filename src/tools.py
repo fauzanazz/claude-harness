@@ -1,9 +1,9 @@
 import base64
 
-from .sandbox import SandboxManager
+from .backend import SandboxBackend
 
 
-def read_file(sandbox: SandboxManager, container_id: str, path: str) -> str:
+def read_file(sandbox: SandboxBackend, container_id: str, path: str) -> str:
     result = sandbox.exec(container_id, f"cat {path}")
     if result["return_code"] != 0:
         error = result["stderr"].strip() or f"cat exited with code {result['return_code']}"
@@ -11,7 +11,7 @@ def read_file(sandbox: SandboxManager, container_id: str, path: str) -> str:
     return result["stdout"]
 
 
-def write_file(sandbox: SandboxManager, container_id: str, path: str, content: str) -> str:
+def write_file(sandbox: SandboxBackend, container_id: str, path: str, content: str) -> str:
     encoded = base64.b64encode(content.encode()).decode()
     result = sandbox.exec(container_id, f"echo {encoded} | base64 -d > {path}")
     if result["return_code"] != 0:
@@ -20,7 +20,7 @@ def write_file(sandbox: SandboxManager, container_id: str, path: str, content: s
     return f"Successfully wrote to {path}"
 
 
-def bash_execute(sandbox: SandboxManager, container_id: str, command: str) -> str:
+def bash_execute(sandbox: SandboxBackend, container_id: str, command: str) -> str:
     result = sandbox.exec(container_id, command)
     parts = []
     if result["stdout"]:
@@ -31,7 +31,7 @@ def bash_execute(sandbox: SandboxManager, container_id: str, command: str) -> st
     return "\n".join(parts)
 
 
-def grep_search(sandbox: SandboxManager, container_id: str, pattern: str, path: str = "/workspace") -> str:
+def grep_search(sandbox: SandboxBackend, container_id: str, pattern: str, path: str = "/workspace") -> str:
     result = sandbox.exec(container_id, f"rg {pattern} {path}")
     if result["return_code"] != 0:
         if result["stdout"].strip() == "" and result["stderr"].strip() == "":
@@ -103,7 +103,7 @@ _TOOL_MAP = {
 }
 
 
-def dispatch_tool(name: str, args: dict, sandbox: SandboxManager, container_id: str) -> str:
+def dispatch_tool(name: str, args: dict, sandbox: SandboxBackend, container_id: str) -> str:
     if name not in _TOOL_MAP:
         raise ValueError(f"Unknown tool: {name!r}")
     return _TOOL_MAP[name](sandbox, container_id, **args)

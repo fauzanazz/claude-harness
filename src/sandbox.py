@@ -6,7 +6,7 @@ import docker
 from .config import settings
 
 
-class SandboxManager:
+class DockerBackend:
     def __init__(self):
         self.client = docker.from_env()
 
@@ -21,8 +21,8 @@ class SandboxManager:
         )
         return container.id  # type: ignore[union-attr]
 
-    def exec(self, container_id: str, command: str, timeout: int = 30) -> dict:
-        container = self.client.containers.get(container_id)
+    def exec(self, vm_id: str, command: str, timeout: int = 30) -> dict:
+        container = self.client.containers.get(vm_id)
         wrapped_command = ["sh", "-c", f"timeout {timeout} sh -c {repr(command)}"]
         exit_code, output = container.exec_run(wrapped_command, demux=True)
         stdout_bytes, stderr_bytes = output if output else (None, None)
@@ -32,17 +32,17 @@ class SandboxManager:
             "return_code": exit_code,
         }
 
-    def copy_to(self, container_id: str, local_path: str, container_path: str):
-        container = self.client.containers.get(container_id)
+    def copy_to(self, vm_id: str, local_path: str, remote_path: str):
+        container = self.client.containers.get(vm_id)
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
-            tar.add(local_path, arcname=container_path.lstrip("/"))
+            tar.add(local_path, arcname=remote_path.lstrip("/"))
         buf.seek(0)
         container.put_archive("/", buf)
 
-    def copy_from(self, container_id: str, container_path: str) -> bytes:
-        container = self.client.containers.get(container_id)
-        stream, _ = container.get_archive(container_path)
+    def copy_from(self, vm_id: str, remote_path: str) -> bytes:
+        container = self.client.containers.get(vm_id)
+        stream, _ = container.get_archive(remote_path)
         buf = io.BytesIO()
         for chunk in stream:
             buf.write(chunk)
@@ -54,10 +54,25 @@ class SandboxManager:
                 return b""
             return f.read()
 
-    def list_files(self, container_id: str, path: str = "/workspace") -> list[str]:
-        result = self.exec(container_id, f"ls -la {path}")
+    def list_files(self, vm_id: str, path: str = "/workspace") -> list[str]:
+        result = self.exec(vm_id, f"ls -la {path}")
         return result["stdout"].splitlines()
 
-    def destroy(self, container_id: str):
-        container = self.client.containers.get(container_id)
+    def destroy(self, vm_id: str):
+        container = self.client.containers.get(vm_id)
         container.remove(force=True)
+
+    def is_running(self, vm_id: str) -> bool:
+        try:
+            container = self.client.containers.get(vm_id)
+            return container.status == "running"
+        except Exception:
+            return False
+
+    @property
+    def recyclable(self) -> bool:
+        return True
+
+
+# Backward-compat alias
+SandboxManager = DockerBackend

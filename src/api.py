@@ -10,16 +10,25 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from .agent import AgentLoop
+from .backend import SandboxBackend
 from .compaction import compact_messages
 from .config import settings
 from .pool import ContainerPool
-from .sandbox import SandboxManager
 from .sessions import SessionManager
 
 logger = logging.getLogger(__name__)
 
+
+def create_backend() -> SandboxBackend:
+    if settings.sandbox_backend == "firecracker":
+        from .firecracker import FirecrackerBackend
+        return FirecrackerBackend()
+    from .sandbox import DockerBackend
+    return DockerBackend()
+
+
 # Global state
-sandbox_manager = SandboxManager()
+sandbox_manager = create_backend()
 pool = ContainerPool(sandbox_manager, min_size=settings.pool_min_size, max_size=settings.pool_max_size)
 session_manager = SessionManager(pool)
 

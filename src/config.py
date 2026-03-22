@@ -8,6 +8,7 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    sandbox_backend: str = "docker"
     model: str = "claude-sonnet-4-6"
     sandbox_image: str = "claude-harness-sandbox"
     sandbox_memory: str = "2g"
