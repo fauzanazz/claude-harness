@@ -19,12 +19,13 @@ disk: "20GiB"
 nestedVirtualization: true
 
 mounts:
-  # Mount the project directory for easy access to rootfs, kernel, snapshots
+  # Mount the home directory (includes the project)
   - location: "~"
     writable: true
 
-  # Explicit mount for the harness repo
-  - location: "."
+  # Mount the repo directory at a convenient path inside the VM
+  # {{.Dir}} resolves to the directory containing this lima.yaml file
+  - location: "{{.Dir}}/.."
     mountPoint: "/harness"
     writable: true
 
