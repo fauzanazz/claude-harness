@@ -1,5 +1,7 @@
 import asyncio
+import collections
 import logging
+import threading
 from typing import AsyncGenerator
 
 from claude_agent_sdk import (
@@ -42,6 +44,9 @@ class AgentLoop:
         self.model = model
         self.permissions = permissions or PermissionManager()
         self._event_queue: asyncio.Queue[dict] = asyncio.Queue()
+        # Thread-safe buffer for tool results (MCP tools may run in a different context)
+        self._tool_results: collections.deque[dict] = collections.deque()
+        self._tool_results_lock = threading.Lock()
 
     async def _check_permission(self, tool_name: str, args: dict) -> str | None:
         decision = self.permissions.check(tool_name)
@@ -70,14 +75,16 @@ class AgentLoop:
         async def _run_tool(name: str, args: dict) -> dict:
             error = await agent._check_permission(name, args)
             if error:
-                await agent._event_queue.put({
-                    "type": "tool_result", "content": error, "is_error": True,
-                })
+                with agent._tool_results_lock:
+                    agent._tool_results.append({
+                        "type": "tool_result", "content": error, "is_error": True,
+                    })
                 return {"content": [{"type": "text", "text": error}]}
             result = dispatch_tool(name, args, sandbox, container_id)
-            await agent._event_queue.put({
-                "type": "tool_result", "content": result, "is_error": False,
-            })
+            with agent._tool_results_lock:
+                agent._tool_results.append({
+                    "type": "tool_result", "content": result, "is_error": False,
+                })
             return {"content": [{"type": "text", "text": result}]}
 
         @tool("read_file", "Read the contents of a file at the given path in the sandbox", {"path": str})
@@ -119,9 +126,13 @@ class AgentLoop:
         async with ClaudeSDKClient(options=options) as client:
             await client.query(last_user_msg)
             async for message in client.receive_response():
-                # Drain any permission events that were pushed during tool execution
+                # Drain permission events
                 while not self._event_queue.empty():
                     yield self._event_queue.get_nowait()
+                # Drain tool results (thread-safe)
+                with self._tool_results_lock:
+                    while self._tool_results:
+                        yield self._tool_results.popleft()
 
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
@@ -152,3 +163,6 @@ class AgentLoop:
             # Final drain
             while not self._event_queue.empty():
                 yield self._event_queue.get_nowait()
+            with self._tool_results_lock:
+                while self._tool_results:
+                    yield self._tool_results.popleft()
