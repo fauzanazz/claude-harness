@@ -64,9 +64,12 @@ async def fc_api(
     return resp
 
 
-async def configure_vm(client: httpx.AsyncClient, rootfs_cow: str, vsock_uds_path: str):
-    """Configure the microVM before boot."""
-    # Machine config
+async def configure_vm(client: httpx.AsyncClient):
+    """Configure the microVM before boot.
+
+    All paths are relative to Firecracker's cwd (the work directory).
+    This ensures snapshot restore works with the same relative paths.
+    """
     await fc_api(
         client,
         "PUT",
@@ -77,38 +80,36 @@ async def configure_vm(client: httpx.AsyncClient, rootfs_cow: str, vsock_uds_pat
         },
     )
 
-    # Boot source
     await fc_api(
         client,
         "PUT",
         "/boot-source",
         json={
-            "kernel_image_path": KERNEL_PATH,
+            "kernel_image_path": os.path.abspath(KERNEL_PATH),
             "boot_args": "console=ttyS0 reboot=k panic=1 pci=off init=/init.sh",
         },
     )
 
-    # Root drive (use CoW copy so original rootfs stays clean)
+    # Relative paths — must match at restore time
     await fc_api(
         client,
         "PUT",
         "/drives/rootfs",
         json={
             "drive_id": "rootfs",
-            "path_on_host": rootfs_cow,
+            "path_on_host": "rootfs.ext4",
             "is_root_device": True,
             "is_read_only": False,
         },
     )
 
-    # Vsock device
     await fc_api(
         client,
         "PUT",
         "/vsock",
         json={
             "guest_cid": VSOCK_CID,
-            "uds_path": vsock_uds_path,
+            "uds_path": "vsock.sock",
         },
     )
 
@@ -216,22 +217,24 @@ async def bake():
     socket_path = create_socket_path()
     socket_dir = os.path.dirname(socket_path)
 
-    # Create a CoW copy of rootfs for the bake VM
-    rootfs_cow = os.path.join(socket_dir, "rootfs-cow.ext4")
+    # Use fixed relative filenames — at restore time, Firecracker expects
+    # resources at the same relative paths from its cwd
+    rootfs_cow = os.path.join(socket_dir, "rootfs.ext4")
     shutil.copy2(ROOTFS_PATH, rootfs_cow)
-
-    # Unique vsock UDS path per run (avoids "address in use" from stale sockets)
     vsock_uds_path = os.path.join(socket_dir, "vsock.sock")
 
-    # Start Firecracker process
-    print(f"Starting Firecracker (socket: {socket_path})")
+    # Start Firecracker with cwd=socket_dir so paths are relative
+    print(f"Starting Firecracker (cwd: {socket_dir})")
     fc_log = os.path.join(socket_dir, "firecracker.log")
     fc_log_file = open(fc_log, "w")
     fc_proc = subprocess.Popen(
-        [FIRECRACKER_BIN, "--api-sock", socket_path],
+        [FIRECRACKER_BIN, "--api-sock", "api.sock"],
+        cwd=socket_dir,
         stdout=fc_log_file,
         stderr=fc_log_file,
     )
+    # Update socket_path to absolute for our httpx client
+    socket_path = os.path.join(socket_dir, "api.sock")
 
     try:
         # Wait for socket to appear
@@ -245,7 +248,7 @@ async def bake():
         transport = httpx.AsyncHTTPTransport(uds=socket_path)
         async with httpx.AsyncClient(transport=transport, timeout=30) as client:
             # Configure and boot
-            await configure_vm(client, rootfs_cow, vsock_uds_path)
+            await configure_vm(client)
 
             print("Booting microVM...")
             await fc_api(client, "PUT", "/actions", json={"action_type": "InstanceStart"})

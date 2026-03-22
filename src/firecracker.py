@@ -136,23 +136,25 @@ class FirecrackerBackend:
         socket_path = os.path.join(work_dir, "api.sock")
         vsock_uds_path = os.path.join(work_dir, "vsock.sock")
 
-        # CoW copy of rootfs (reflink if filesystem supports it)
+        # CoW copy of rootfs — must be named "rootfs.ext4" to match bake paths
         rootfs_cow = os.path.join(work_dir, "rootfs.ext4")
-        shutil.copy2(self._rootfs_path, rootfs_cow)
+        shutil.copy2(os.path.abspath(self._rootfs_path), rootfs_cow)
 
-        # Start Firecracker process
+        # Start Firecracker with cwd=work_dir so relative paths match bake
         fc_proc = subprocess.Popen(
-            [settings.firecracker_bin, "--api-sock", socket_path],
+            [settings.firecracker_bin, "--api-sock", "api.sock"],
+            cwd=work_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        socket_path = os.path.join(work_dir, "api.sock")
 
         try:
             # Wait for API socket
             self._wait_for_socket(socket_path)
 
             # Restore from snapshot
-            self._restore_snapshot(socket_path, vsock_uds_path, rootfs_cow)
+            self._restore_snapshot(socket_path)
 
             vm = VMInstance(
                 vm_id=vm_id,
@@ -184,40 +186,33 @@ class FirecrackerBackend:
             time.sleep(0.05)
         raise RuntimeError(f"Firecracker socket did not appear at {socket_path}")
 
-    def _restore_snapshot(
-        self, socket_path: str, vsock_uds_path: str, rootfs_path: str
-    ):
-        """Load snapshot via Firecracker REST API (synchronous)."""
+    def _fc_api(self, client, method: str, path: str, **kwargs):
+        """Make a Firecracker API request with error details."""
+        resp = client.request(method, f"http://localhost{path}", **kwargs)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Firecracker API {method} {path}: {resp.status_code} {resp.text}")
+        return resp
+
+    def _restore_snapshot(self, socket_path: str):
+        """Load snapshot via Firecracker REST API (synchronous).
+
+        Firecracker restores drive and vsock paths from the snapshot.
+        These are relative to cwd, which must match the bake layout:
+          rootfs.ext4, vsock.sock, api.sock (all in work_dir)
+        """
         transport = httpx.HTTPTransport(uds=socket_path)
         with httpx.Client(transport=transport, timeout=30) as client:
-            # Pre-configure host-side resources before snapshot load
+            snap_path = os.path.abspath(
+                os.path.join(self._snapshot_dir, "vmstate.bin")
+            )
+            mem_path = os.path.abspath(
+                os.path.join(self._snapshot_dir, "memory.bin")
+            )
 
-            # Drive (point to our CoW copy)
-            client.put(
-                "http://localhost/drives/rootfs",
-                json={
-                    "drive_id": "rootfs",
-                    "path_on_host": rootfs_path,
-                    "is_root_device": True,
-                    "is_read_only": False,
-                },
-            ).raise_for_status()
-
-            # Vsock (unique UDS path for this VM)
-            client.put(
-                "http://localhost/vsock",
-                json={
-                    "guest_cid": 3,
-                    "uds_path": vsock_uds_path,
-                },
-            ).raise_for_status()
-
-            # Load snapshot with MAP_PRIVATE for CoW memory sharing
-            snap_path = os.path.join(self._snapshot_dir, "vmstate.bin")
-            mem_path = os.path.join(self._snapshot_dir, "memory.bin")
-
-            client.put(
-                "http://localhost/snapshot/load",
+            self._fc_api(
+                client,
+                "PUT",
+                "/snapshot/load",
                 json={
                     "snapshot_path": snap_path,
                     "mem_backend": {
@@ -225,14 +220,9 @@ class FirecrackerBackend:
                         "backend_type": "File",
                     },
                     "enable_diff_snapshots": False,
+                    "resume_vm": True,
                 },
-            ).raise_for_status()
-
-            # Resume
-            client.patch(
-                "http://localhost/vm",
-                json={"state": "Resumed"},
-            ).raise_for_status()
+            )
 
     def exec(self, vm_id: str, command: str, timeout: int = 30) -> dict:
         vm = self._get_vm(vm_id)
