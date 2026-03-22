@@ -66,6 +66,8 @@ provision:
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
         source "$HOME/.cargo/env"
         rustup target add aarch64-unknown-linux-musl
+        # Ensure cargo is on PATH for future shells
+        echo '. "$HOME/.cargo/env"' >> "$HOME/.bashrc"
       fi
 
 portForwards:
