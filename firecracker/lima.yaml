@@ -19,14 +19,7 @@ disk: "20GiB"
 nestedVirtualization: true
 
 mounts:
-  # Mount the home directory (includes the project)
   - location: "~"
-    writable: true
-
-  # Mount the repo directory at a convenient path inside the VM
-  # {{.Dir}} resolves to the directory containing this lima.yaml file
-  - location: "{{.Dir}}/.."
-    mountPoint: "/harness"
     writable: true
 
 provision:
@@ -47,6 +40,9 @@ provision:
 
       # Ensure KVM is accessible
       chmod 666 /dev/kvm || true
+
+      # Convenience symlink (repo is already mounted via ~ at its real path)
+      ln -sfn /Users/enjat/Github/claude-harness /harness
 
       # Install build tools for rootfs
       apt-get update -q
