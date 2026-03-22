@@ -59,6 +59,17 @@ provision:
       usermod -aG docker "$(limactl-user 2>/dev/null || echo lima)" || true
       usermod -aG kvm "$(limactl-user 2>/dev/null || echo lima)" || true
 
+  # Install Rust toolchain as the user (not root)
+  - mode: user
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      if ! command -v rustup &>/dev/null; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source "$HOME/.cargo/env"
+        rustup target add aarch64-unknown-linux-musl
+      fi
+
 portForwards:
   # Forward Firecracker API socket access (if needed from host)
   - guestSocket: "/tmp/firecracker.sock"
