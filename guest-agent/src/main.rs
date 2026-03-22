@@ -5,7 +5,7 @@ use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 #[cfg(target_os = "linux")]
-use tokio_vsock::VsockListener;
+use tokio_vsock::{VsockAddr, VsockListener};
 
 const VSOCK_PORT: u32 = 5000;
 const TCP_FALLBACK_PORT: u16 = 5000;
@@ -253,7 +253,7 @@ async fn handle_connection<S: AsyncReadExt + AsyncWriteExt + Unpin>(stream: S) {
 async fn main() -> std::io::Result<()> {
     eprintln!("guest-agent: listening on vsock port {VSOCK_PORT}");
 
-    let listener = VsockListener::bind(libc::VMADDR_CID_ANY, VSOCK_PORT)?;
+    let mut listener = VsockListener::bind(VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT))?;
 
     loop {
         let (stream, addr) = listener.accept().await?;
