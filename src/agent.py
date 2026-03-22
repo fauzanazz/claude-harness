@@ -67,37 +67,34 @@ class AgentLoop:
         container_id = self.container_id
         agent = self
 
+        async def _run_tool(name: str, args: dict) -> dict:
+            error = await agent._check_permission(name, args)
+            if error:
+                await agent._event_queue.put({
+                    "type": "tool_result", "content": error, "is_error": True,
+                })
+                return {"content": [{"type": "text", "text": error}]}
+            result = dispatch_tool(name, args, sandbox, container_id)
+            await agent._event_queue.put({
+                "type": "tool_result", "content": result, "is_error": False,
+            })
+            return {"content": [{"type": "text", "text": result}]}
+
         @tool("read_file", "Read the contents of a file at the given path in the sandbox", {"path": str})
         async def read_file(args):
-            error = await agent._check_permission("read_file", args)
-            if error:
-                return {"content": [{"type": "text", "text": error}]}
-            result = dispatch_tool("read_file", args, sandbox, container_id)
-            return {"content": [{"type": "text", "text": result}]}
+            return await _run_tool("read_file", args)
 
         @tool("write_file", "Write content to a file at the given path in the sandbox", {"path": str, "content": str})
         async def write_file(args):
-            error = await agent._check_permission("write_file", args)
-            if error:
-                return {"content": [{"type": "text", "text": error}]}
-            result = dispatch_tool("write_file", args, sandbox, container_id)
-            return {"content": [{"type": "text", "text": result}]}
+            return await _run_tool("write_file", args)
 
         @tool("bash_execute", "Execute a bash command in the sandbox and return stdout, stderr, and return code", {"command": str})
         async def bash_execute(args):
-            error = await agent._check_permission("bash_execute", args)
-            if error:
-                return {"content": [{"type": "text", "text": error}]}
-            result = dispatch_tool("bash_execute", args, sandbox, container_id)
-            return {"content": [{"type": "text", "text": result}]}
+            return await _run_tool("bash_execute", args)
 
         @tool("grep_search", "Search for a pattern in files using ripgrep in the sandbox", {"pattern": str, "path": str})
         async def grep_search(args):
-            error = await agent._check_permission("grep_search", args)
-            if error:
-                return {"content": [{"type": "text", "text": error}]}
-            result = dispatch_tool("grep_search", args, sandbox, container_id)
-            return {"content": [{"type": "text", "text": result}]}
+            return await _run_tool("grep_search", args)
 
         return create_sdk_mcp_server("sandbox-tools", tools=[read_file, write_file, bash_execute, grep_search])
 
